@@ -2,7 +2,7 @@
 
 A simulator and debugger for Tailscale tailnet policy files. Paste your HuJSON, describe your users and devices, and see who can reach what, why a connection is denied, and what a change would open up.
 
-Live: https://policy-lab.vercel.app
+Live: https://policy-lab-delta.vercel.app
 
 ## The pain
 
