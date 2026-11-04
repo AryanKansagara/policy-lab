@@ -214,3 +214,10 @@ test('sample baselines show a blast radius in both directions', () => {
   const lost = rows.find((r) => r.src === 'gh-runner' && r.dst === 'api-prod-1')!
   assert.equal(formatCaps(lost.lost), 'tcp+udp:443')
 })
+
+test('enterprise sample: the legacy ACL really is shadowed by the grant, and a missing tcp:22 path is caught', () => {
+  const s = SAMPLES[2]
+  const found = lint(load(s.policy), s.inventory)
+  assert.ok(found.some((x) => x.code === 'shadowed' && x.path === 'acls.0'))
+  assert.ok(found.some((x) => x.code === 'ssh-no-network' && x.path === 'ssh.0'))
+})
