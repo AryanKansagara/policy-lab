@@ -218,7 +218,7 @@ const enterprisePolicy = `// Globex: grants-first policy with app capabilities, 
     // Support reads dashboards on k8s.
     {"src": ["group:support"], "dst": ["tag:k8s"], "ip": ["tcp:443"]},
 
-    // Contractors: a single legacy box. Shadowed by nothing, but broad.
+    // Contractors: one legacy box, but on every port and protocol.
     {"src": ["group:contractors"], "dst": ["tag:legacy"], "ip": ["*"]},
 
     // Kubernetes nodes talk to Postgres.
@@ -226,7 +226,7 @@ const enterprisePolicy = `// Globex: grants-first policy with app capabilities, 
   ],
   "acls": [
     // Legacy rule kept during the grants migration (now redundant).
-    {"action": "accept", "src": ["group:platform"], "dst": ["tag:k8s:443"]},
+    {"action": "accept", "src": ["group:platform"], "proto": "tcp", "dst": ["tag:k8s:443"]},
   ],
   "ssh": [
     {"action": "check", "src": ["group:platform"], "dst": ["tag:k8s", "tag:db"], "users": ["ubuntu", "root"], "checkPeriod": "4h"},
