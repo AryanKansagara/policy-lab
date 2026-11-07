@@ -43,7 +43,7 @@ export interface Policy {
 export interface Loaded { parse: ParseResult; policy?: Policy }
 
 // ---------- address helpers (IPv4 math; IPv6 compared as exact strings) ----------
-// ponytail: IPv4-only CIDR math; add BigInt IPv6 ranges if 4via6 policies matter.
+// IPv4-only CIDR math; add BigInt IPv6 ranges if 4via6 policies matter.
 type Range = { lo: number; hi: number }
 const ip4 = (s: string): number | null => {
   const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(s)
