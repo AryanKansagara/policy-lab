@@ -1,0 +1,681 @@
+// Public policy used as the "Real homelab" sample and as a test fixture. Licence notice below.
+export const REAL_HOMELAB = `// Real tailnet policy from github.com/mdlayher/homelab, terraform/tailscale/policy.hujson
+// at commit e396dad61d7185b92550b49f9d7f797037f7c7cf (2026-11-15). The owner's login is replaced
+// with admin@example.com (and the SSH user with "admin"); nothing else is changed.
+//
+// # MIT License
+//
+// Copyright (C) 2019-2022 Matt Layher
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+// Tailnet policy, applied with OpenTofu; see main.tf. Rules refer to
+// machines by tag or service name.
+{
+	// The one human. Rules name this group rather than autogroup:member, so
+	// a user added later holds nothing until a rule says so.
+	"groups": {
+		"group:admin": ["admin@example.com"],
+	},
+
+	"tagOwners": {
+		// Development containers with unattended agents.
+		"tag:dev": ["autogroup:admin"],
+		// Network termination points for somewhere that is not the homelab.
+		// Not tag:infra: that tag auto-approves a machine as the host of any
+		// service, and an edge hosts none while being the most exposed
+		// machine in the fleet.
+		"tag:edge": ["autogroup:admin"],
+		// Home Assistant appliance.
+		"tag:hass": ["autogroup:admin"],
+		// Infrastructure machines with services.
+		"tag:infra": ["autogroup:admin"],
+		// IP KVM for the server, a PiKVM appliance.
+		"tag:kvm": ["autogroup:admin"],
+		// Out-of-band router on its own LTE uplink, running OpenWrt.
+		"tag:oob": ["autogroup:admin"],
+		// The router (superset of tag:infra): exit node.
+		"tag:router": ["autogroup:admin"],
+		// Windows PCs, reached over SSH from the development container.
+		"tag:windows": ["autogroup:admin"],
+	},
+
+	// A current client, required of a personal device where its reach is
+	// not otherwise authenticated: the routed segments, the services and
+	// the exit node. The attributes are the client's own report, so this
+	// keeps legitimate devices patched and defends against nothing hostile.
+	// checks.tf reads the floor from here.
+	"postures": {
+		"posture:currentClient": {
+			"assertions": ["node:tsVersion >= '1.104'"],
+			"onFailure": {
+				"showAlerts":     ["warn-in-client"],
+				"endUserMessage": "Update Tailscale to regain access.",
+			},
+		},
+	},
+
+	"acls": [
+		// Personal devices (phone and other untagged logins) reach every
+		// device on the tailnet. The infrastructure machines are the
+		// exception: SSH and the router's resolver here, the rest below.
+		{
+			"action": "accept",
+			"src":    ["group:admin"],
+			"dst": [
+				"group:admin:*",
+				"tag:dev:*",
+				"tag:edge:*",
+				"tag:hass:*",
+				"tag:infra:22",
+				"tag:router:53",
+				"tag:kvm:*",
+				"tag:oob:*",
+				"tag:windows:*",
+			],
+		},
+
+		// The rest of the infrastructure machines' ports, on a current
+		// client only: the observability stack listens on every address
+		// without a login of its own, so these are the services' backends
+		// and take the services' posture.
+		{
+			"action":     "accept",
+			"src":        ["group:admin"],
+			"srcPosture": ["posture:currentClient"],
+			"dst":        ["tag:infra:*"],
+		},
+
+		// Only personal devices route through the exit node offered by the
+		// router; tagged machines have their own internet paths.
+		{
+			"action":     "accept",
+			"src":        ["group:admin"],
+			"srcPosture": ["posture:currentClient"],
+			"dst":        ["autogroup:internet:*"],
+		},
+
+		// The development container reaches the Home Assistant API, which
+		// performs its own bearer-token authentication.
+		{
+			"action": "accept",
+			"src":    ["tag:dev"],
+			"dst":    ["tag:hass:8123"],
+		},
+
+		// SSH to Home Assistant's Terminal & SSH add-on from the development
+		// container. The add-on authenticates only SSH keys, and the
+		// container holds none of its own: the admin's FIDO2 keys reach it
+		// through his forwarded agent, so each login needs a physical touch,
+		// as on the machines.
+		{
+			"action": "accept",
+			"src":    ["tag:dev"],
+			"dst":    ["tag:hass:22"],
+		},
+
+		// Deploys run from the development container's interactive panes:
+		// SSH to the machines rides the tailnet, since dev0 cannot reach the
+		// LAN. Network access alone grants nothing here — the machines
+		// authenticate only the admin's SSH key, which exists in the
+		// container solely through his forwarded agent.
+		{
+			"action": "accept",
+			"src":    ["tag:dev"],
+			"dst":    ["tag:infra:22", "tag:edge:22"],
+		},
+
+		// SSH to the KVM from the development container. The KVM accepts
+		// only the admin's FIDO2 keys from the container's addresses, so
+		// each login needs a physical touch, as on the machines. 2222 is
+		// consrv, behind svc:consrv, reachable directly as well since the
+		// serial consoles are break-glass access.
+		{
+			"action": "accept",
+			"src":    ["tag:dev"],
+			"dst":    ["tag:kvm:22", "tag:kvm:2222"],
+		},
+
+		// openwrt/deploy from the development container, to the dropbear
+		// instance on the out-of-band router that accepts only the admin's
+		// FIDO2 keys. Port 22 there is Tailscale SSH, for personal devices.
+		{
+			"action": "accept",
+			"src":    ["tag:dev"],
+			"dst":    ["tag:oob:2022"],
+		},
+
+		// The Windows PCs accept the tailnet's DNS settings, whose split DNS
+		// sends the internal zones to the router's CoreDNS at its tailnet
+		// address (see dns.tf).
+		{
+			"action": "accept",
+			"src":    ["tag:windows"],
+			"dst":    ["tag:router:53"],
+		},
+
+		// SSH to the Windows PCs from the development container. Their
+		// OpenSSH servers accept only the admin's FIDO2 keys, so each login
+		// needs a physical touch, as on the machines.
+		{
+			"action": "accept",
+			"src":    ["tag:dev"],
+			"dst":    ["tag:windows:22"],
+		},
+	],
+
+	// Tailscale Services.
+	"grants": [
+		// Any device may relay through the router's peer relay: it is the
+		// one machine with an unfiltered public UDP presence and a leg on
+		// every VLAN, so it serves pairs that cannot connect directly -
+		// notably a phone on cellular reaching hosts with no WAN port
+		// forward - without a distant DERP server. Relayed payloads remain
+		// end-to-end encrypted WireGuard.
+		{
+			"src": ["*"],
+			"dst": ["tag:router"],
+			"app": {
+				"tailscale.com/cap/relay": [],
+			},
+		},
+
+		// Personal devices reach every service.
+		{
+			"src":        ["group:admin"],
+			"srcPosture": ["posture:currentClient"],
+			"dst": [
+				"svc:alertmanager",
+				"svc:consrv",
+				"svc:grafana",
+				"svc:loki",
+				"svc:prometheus",
+				"svc:unifi",
+			],
+			"ip": ["*"],
+		},
+
+		// Personal devices reach the house's segments and the anycast
+		// services through the router's subnet routes. The router advertises
+		// the site's whole prefixes; this grant is what narrows them, and it
+		// leaves the management segment out: its hosts are reached by their
+		// tailnet names and the services above, each with its own
+		// authentication; the router's ruleset drops what the exit node
+		// would carry there to a GUA. Tagged machines get no grant here:
+		// those at the house reach these networks on the LAN.
+		{
+			"src":        ["group:admin"],
+			"srcPosture": ["posture:currentClient"],
+			"dst": [
+				"10.0.0.0/24",
+				"10.1.9.0/24",
+				"10.1.10.0/24",
+				"10.1.20.0/24",
+				"10.1.30.0/24",
+				"10.1.66.0/24",
+				"fd9e:1a04:f01d:1::/64",
+				"fd9e:1a04:f01d:109::/64",
+				"fd9e:1a04:f01d:110::/64",
+				"fd9e:1a04:f01d:120::/64",
+				"fd9e:1a04:f01d:130::/64",
+				"fd9e:1a04:f01d:166::/64",
+			],
+			"ip": ["*"],
+		},
+
+		// The development container reads metrics, alerts, and logs, but not
+		// Grafana (it has its own auth and state).
+		{
+			"src": ["tag:dev"],
+			"dst": [
+				"svc:alertmanager",
+				"svc:loki",
+				"svc:prometheus",
+			],
+			"ip": ["tcp:443"],
+		},
+
+		// The UniFi controller's API from the development container, for
+		// terraform/unifi and its bootstrap. The API still requires a login.
+		{
+			"src": ["tag:dev"],
+			"dst": ["svc:unifi"],
+			"ip":  ["tcp:8443"],
+		},
+
+		// The serial consoles from the development container. consrv still
+		// requires an SSH login.
+		{
+			"src": ["tag:dev"],
+			"dst": ["svc:consrv"],
+			"ip":  ["tcp:22"],
+		},
+
+		// The server's blackbox exporter probes the web services end to end
+		// through the serve path (https://<name>.<tailnet>.ts.net), so the
+		// ServiceDown alerts cover TLS and serve, not just the backends.
+		{
+			"src": ["tag:infra"],
+			"dst": [
+				"svc:alertmanager",
+				"svc:grafana",
+				"svc:loki",
+				"svc:prometheus",
+			],
+			"ip": ["tcp:443"],
+		},
+
+		// The same for the serial consoles: an SSH banner check through the
+		// KVM's serve path, which never logs in.
+		{
+			"src": ["tag:infra"],
+			"dst": ["svc:consrv"],
+			"ip":  ["tcp:22"],
+		},
+	],
+
+	// The router self-approves as an exit node and for its subnet routes;
+	// infrastructure machines and the KVM self-approve as hosts for their
+	// services.
+	"autoApprovers": {
+		"exitNode": ["tag:router"],
+		"routes": {
+			"10.0.0.0/24":             ["tag:router"],
+			"10.1.0.0/16":             ["tag:router"],
+			"fd9e:1a04:f01d:1::/64":   ["tag:router"],
+			"fd9e:1a04:f01d:100::/56": ["tag:router"],
+		},
+		"services": {
+			"svc:alertmanager": ["tag:infra"],
+			"svc:consrv":       ["tag:kvm"],
+			"svc:grafana":      ["tag:infra"],
+			"svc:loki":         ["tag:infra"],
+			"svc:prometheus":   ["tag:infra"],
+			"svc:unifi":        ["tag:infra"],
+		},
+	},
+
+	// Tailscale SSH between personal devices, with check mode requiring
+	// reauthentication.
+	"ssh": [
+		{
+			"action": "check",
+			"src":    ["group:admin"],
+			"dst":    ["autogroup:self"],
+			"users":  ["autogroup:nonroot", "root"],
+		},
+
+		// Personal devices into the out-of-band router as root, the only
+		// user OpenWrt has: the way in when the router is down. The check
+		// gates new connections only, and every one of them; open sessions
+		// outlive it. Requires --ssh on the machine.
+		{
+			"action":      "check",
+			"checkPeriod": "always",
+			"src":         ["group:admin"],
+			"dst":         ["tag:oob"],
+			"users":       ["root"],
+		},
+	],
+
+	// Assertions the control plane checks on every apply; a failing one
+	// rejects the policy. Every source class states what it must and must
+	// not reach: each machine class, each service, the routed segments and
+	// the exit node, so a rule edit cannot widen access unnoticed. Subnet
+	// routes are tested by one address inside each segment, since a prefix
+	// cannot be named here; the addresses are not hosts. A test target
+	// carries only the tag it names, so a machine with several tags is
+	// tested under the tag its rule grants.
+	"tests": [
+		// Personal devices on a current client: every machine, every service,
+		// the exit node, and the routed segments other than management.
+		{
+			"src":             "group:admin",
+			"srcPostureAttrs": {"node:tsVersion": "1.104.2"},
+			"accept": [
+				"group:admin:22",
+				"tag:dev:22",
+				"tag:edge:22",
+				"tag:hass:8123",
+				"tag:infra:22",
+				"tag:infra:9090",
+				"tag:router:53",
+				"tag:kvm:443",
+				"tag:oob:2022",
+				"tag:windows:22",
+				"svc:alertmanager:443",
+				"svc:consrv:22",
+				"svc:grafana:443",
+				"svc:loki:443",
+				"svc:prometheus:443",
+				"svc:unifi:8443",
+				"1.1.1.1:443",
+				"[2606:4700:4700::1111]:443",
+				"10.0.0.53:53",
+				"10.0.0.123:123",
+				"10.1.9.254:80",
+				"10.1.10.254:80",
+				"10.1.20.254:80",
+				"10.1.30.254:80",
+				"10.1.66.254:80",
+				"[fd9e:1a04:f01d:1::53]:53",
+				"[fd9e:1a04:f01d:109::1]:80",
+				"[fd9e:1a04:f01d:110::1]:80",
+				"[fd9e:1a04:f01d:120::1]:80",
+				"[fd9e:1a04:f01d:130::1]:80",
+				"[fd9e:1a04:f01d:166::1]:80",
+			],
+			"deny": [
+				"10.1.0.254:22",
+				"[fd9e:1a04:f01d:100::1]:22",
+				"10.2.0.1:22",
+				"192.168.1.1:80",
+			],
+		},
+		// A personal device on an old client keeps what authenticates on
+		// its own: the machines' SSH and the router's resolver. It loses
+		// the services and their backends, the segments and the exit node.
+		{
+			"src":             "group:admin",
+			"srcPostureAttrs": {"node:tsVersion": "1.102.4"},
+			"accept":          ["group:admin:22", "tag:dev:22", "tag:infra:22", "tag:router:53"],
+			"deny": [
+				"tag:infra:3000",
+				"tag:infra:9090",
+				"tag:infra:3100",
+				"tag:infra:9093",
+				"svc:grafana:443",
+				"10.1.66.254:80",
+				"1.1.1.1:443",
+			],
+		},
+		// The development container: SSH to the machines and the KVM, the
+		// Home Assistant API, the read-only services, nothing else: no other
+		// port, no Grafana, no routed segment, no exit node, no personal
+		// device.
+		{
+			"src": "tag:dev",
+			"accept": [
+				"tag:hass:8123",
+				"tag:hass:22",
+				"tag:infra:22",
+				"tag:edge:22",
+				"tag:kvm:22",
+				"tag:kvm:2222",
+				"tag:oob:2022",
+				"tag:windows:22",
+				"svc:alertmanager:443",
+				"svc:loki:443",
+				"svc:prometheus:443",
+				"svc:unifi:8443",
+				"svc:consrv:22",
+			],
+			"deny": [
+				"group:admin:22",
+				"tag:oob:22",
+				"tag:hass:80",
+				"tag:hass:443",
+				"tag:infra:443",
+				"tag:infra:9090",
+				"tag:router:53",
+				"tag:kvm:443",
+				"tag:edge:443",
+				"tag:windows:3389",
+				"svc:grafana:443",
+				"svc:unifi:443",
+				"svc:prometheus:8443",
+				"10.0.0.53:53",
+				"10.1.66.254:80",
+				"1.1.1.1:443",
+			],
+		},
+		// Infrastructure machines: their own services and nothing else.
+		{
+			"src": "tag:infra",
+			"accept": [
+				"svc:alertmanager:443",
+				"svc:grafana:443",
+				"svc:loki:443",
+				"svc:prometheus:443",
+				"svc:consrv:22",
+			],
+			"deny": [
+				"group:admin:22",
+				"tag:dev:22",
+				"tag:edge:22",
+				"tag:hass:8123",
+				"tag:kvm:22",
+				"tag:oob:2022",
+				"tag:windows:22",
+				"svc:unifi:8443",
+				"10.1.66.254:80",
+				"1.1.1.1:443",
+			],
+		},
+		// The Windows PCs: the router's resolver and nothing else.
+		{
+			"src":    "tag:windows",
+			"accept": ["tag:router:53"],
+			"deny": [
+				"group:admin:22",
+				"tag:router:22",
+				"tag:infra:22",
+				"tag:infra:53",
+				"tag:dev:22",
+				"tag:kvm:443",
+				"svc:grafana:443",
+				"svc:unifi:8443",
+				"10.1.66.254:80",
+				"1.1.1.1:443",
+			],
+		},
+		// The router, the out-of-band router, the KVM, Home Assistant and
+		// the edges reach nothing on their own: not a machine, not a
+		// service, not a segment, not the exit node, not a personal device.
+		// The router's relay grant is a capability, not a connection.
+		{
+			"src": "tag:router",
+			"deny": [
+				"group:admin:22",
+				"tag:dev:22",
+				"tag:edge:22",
+				"tag:hass:8123",
+				"tag:infra:22",
+				"tag:kvm:22",
+				"tag:oob:2022",
+				"tag:windows:22",
+				"svc:consrv:22",
+				"svc:grafana:443",
+				"10.1.66.254:80",
+				"1.1.1.1:443",
+			],
+		},
+		{
+			"src": "tag:oob",
+			"deny": [
+				"group:admin:22",
+				"tag:dev:22",
+				"tag:edge:22",
+				"tag:hass:8123",
+				"tag:infra:22",
+				"tag:kvm:22",
+				"tag:windows:22",
+				"svc:consrv:22",
+				"svc:grafana:443",
+				"10.1.66.254:80",
+				"1.1.1.1:443",
+			],
+		},
+		{
+			"src": "tag:kvm",
+			"deny": [
+				"group:admin:22",
+				"tag:dev:22",
+				"tag:edge:22",
+				"tag:hass:8123",
+				"tag:infra:22",
+				"tag:oob:2022",
+				"tag:windows:22",
+				"svc:consrv:22",
+				"svc:grafana:443",
+				"10.1.66.254:80",
+				"1.1.1.1:443",
+			],
+		},
+		{
+			"src": "tag:hass",
+			"deny": [
+				"group:admin:22",
+				"tag:dev:22",
+				"tag:edge:22",
+				"tag:infra:22",
+				"tag:kvm:22",
+				"tag:oob:2022",
+				"tag:windows:22",
+				"svc:grafana:443",
+				"svc:unifi:8443",
+				"10.1.66.254:80",
+				"1.1.1.1:443",
+			],
+		},
+		{
+			"src": "tag:edge",
+			"deny": [
+				"group:admin:22",
+				"tag:dev:22",
+				"tag:hass:8123",
+				"tag:infra:22",
+				"tag:kvm:22",
+				"tag:oob:2022",
+				"tag:windows:22",
+				"svc:prometheus:443",
+				"svc:grafana:443",
+				"10.1.66.254:80",
+				"1.1.1.1:443",
+			],
+		},
+	],
+
+	// Tailscale SSH: personal devices get a checked session as root on the
+	// out-of-band router, and nowhere else; no machine gets one anywhere.
+	// The source
+	// is the login itself: the SSH test evaluator resolves a user, not a
+	// group (tailscale/tailscale#11790).
+	"sshTests": [
+		{
+			"src":   "admin@example.com",
+			"dst":   ["tag:oob"],
+			"check": ["root"],
+			"deny":  ["admin"],
+		},
+		{
+			"src": "admin@example.com",
+			"dst": [
+				"tag:dev",
+				"tag:edge",
+				"tag:infra",
+				"tag:router",
+				"tag:kvm",
+				"tag:hass",
+				"tag:windows",
+			],
+			"deny": ["admin", "root"],
+		},
+		{
+			"src": "tag:dev",
+			"dst": [
+				"tag:dev",
+				"tag:edge",
+				"tag:oob",
+				"tag:infra",
+				"tag:kvm",
+				"tag:hass",
+				"tag:windows",
+			],
+			"deny": ["admin", "root"],
+		},
+		{
+			"src": "tag:infra",
+			"dst": [
+				"tag:dev",
+				"tag:edge",
+				"tag:oob",
+				"tag:infra",
+				"tag:kvm",
+				"tag:hass",
+				"tag:windows",
+			],
+			"deny": ["admin", "root"],
+		},
+		{
+			"src": "tag:oob",
+			"dst": [
+				"tag:dev",
+				"tag:edge",
+				"tag:oob",
+				"tag:infra",
+				"tag:kvm",
+				"tag:hass",
+				"tag:windows",
+			],
+			"deny": ["admin", "root"],
+		},
+		{
+			"src": "tag:kvm",
+			"dst": [
+				"tag:dev",
+				"tag:edge",
+				"tag:oob",
+				"tag:infra",
+				"tag:kvm",
+				"tag:hass",
+				"tag:windows",
+			],
+			"deny": ["admin", "root"],
+		},
+		{
+			"src": "tag:hass",
+			"dst": [
+				"tag:dev",
+				"tag:edge",
+				"tag:oob",
+				"tag:infra",
+				"tag:kvm",
+				"tag:hass",
+				"tag:windows",
+			],
+			"deny": ["admin", "root"],
+		},
+		{
+			"src": "tag:edge",
+			"dst": [
+				"tag:dev",
+				"tag:edge",
+				"tag:oob",
+				"tag:infra",
+				"tag:kvm",
+				"tag:hass",
+				"tag:windows",
+			],
+			"deny": ["admin", "root"],
+		},
+		{
+			"src": "tag:windows",
+			"dst": [
+				"tag:dev",
+				"tag:edge",
+				"tag:oob",
+				"tag:infra",
+				"tag:kvm",
+				"tag:hass",
+				"tag:windows",
+			],
+			"deny": ["admin", "root"],
+		},
+	],
+}
+`

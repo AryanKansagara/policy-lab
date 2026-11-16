@@ -44,28 +44,59 @@ export interface Policy {
 
 export interface Loaded { parse: ParseResult; policy?: Policy }
 
-// ---------- address helpers (IPv4 math; IPv6 compared as exact strings) ----------
-// IPv4-only CIDR math; add BigInt IPv6 ranges if 4via6 policies matter.
-type Range = { lo: number; hi: number }
-const ip4 = (s: string): number | null => {
+// ---------- address helpers ----------
+// Addresses are 128-bit BigInts; IPv4 lives in the IPv4-mapped block ::ffff:0:0/96 so one range type covers both families.
+type Range = { lo: number; hi: number } // ports
+export type ARange = { lo: bigint; hi: bigint } // addresses
+const V4_BASE = 0xffffn << 32n
+const ip4 = (s: string): bigint | null => {
   const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(s)
   if (!m) return null
   const p = m.slice(1).map(Number)
   if (p.some((x) => x > 255)) return null
-  return ((p[0] << 24) >>> 0) + (p[1] << 16) + (p[2] << 8) + p[3]
+  return V4_BASE + BigInt(((p[0] << 24) >>> 0) + (p[1] << 16) + (p[2] << 8) + p[3])
 }
-export function parseCidr(s: string): Range | null {
-  const [a, b] = s.split('/')
-  const base = ip4(a)
+const ip6 = (s0: string): bigint | null => {
+  let s = s0.replace(/%.*$/, '').toLowerCase()
+  if (!/^[0-9a-f:.]+$/.test(s) || !s.includes(':')) return null
+  const v4 = /(\d+\.\d+\.\d+\.\d+)$/.exec(s) // embedded IPv4 tail, as in ::ffff:1.2.3.4
+  if (v4) {
+    const n = ip4(v4[1])
+    if (n === null) return null
+    const x = Number(n - V4_BASE)
+    s = `${s.slice(0, -v4[1].length)}${(x >>> 16).toString(16)}:${(x & 0xffff).toString(16)}`
+  }
+  const halves = s.split('::')
+  if (halves.length > 2) return null
+  const part = (h: string) => (h ? h.split(':') : [])
+  const head = part(halves[0])
+  const rest = halves.length === 2 ? part(halves[1]) : []
+  const groups = halves.length === 2 ? [...head, ...Array(Math.max(0, 8 - head.length - rest.length)).fill('0'), ...rest] : head
+  if (groups.length !== 8 || groups.some((g) => !/^[0-9a-f]{1,4}$/.test(g))) return null
+  return groups.reduce((acc, g) => (acc << 16n) + BigInt(parseInt(g, 16)), 0n)
+}
+const ipAddr = (s: string) => ip4(s) ?? ip6(s)
+export function parseCidr(s: string): ARange | null {
+  const [a, b, extra] = s.split('/')
+  if (extra !== undefined) return null
+  const v4 = ip4(a)
+  const base = v4 ?? ip6(a)
   if (base === null) return null
   if (b === undefined) return { lo: base, hi: base }
+  const max = v4 !== null ? 32 : 128
   const bits = Number(b)
-  if (!/^\d+$/.test(b) || bits > 32) return null
-  const size = 2 ** (32 - bits)
-  const lo = Math.floor(base / size) * size
-  return { lo, hi: lo + size - 1 }
+  if (!/^\d+$/.test(b) || bits > max) return null
+  const size = 1n << BigInt(max - bits)
+  const lo = (base / size) * size
+  return { lo, hi: lo + size - 1n }
 }
-const isAddrLiteral = (s: string) => parseCidr(s) !== null || s.includes('::') || /^[0-9a-f]+:[0-9a-f:]+(\/\d+)?$/i.test(s)
+const isAddrLiteral = (s: string) => parseCidr(s) !== null
+const within = (r: ARange, outer: ARange) => r.lo >= outer.lo && r.hi <= outer.hi
+const TAILNET = ['100.64.0.0/10', 'fd7a:115c:a1e0::/48'].map((c) => parseCidr(c)!)
+export const inTailnet = (r: ARange) => TAILNET.some((t) => within(r, t))
+const NON_PUBLIC = ['0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8', '169.254.0.0/16', '172.16.0.0/12', '192.168.0.0/16', '224.0.0.0/3', '::/127', 'fc00::/7', 'fe80::/10', 'ff00::/8'].map((c) => parseCidr(c)!)
+/** autogroup:internet covers public addresses only: not private, CGNAT, link-local, loopback or multicast. */
+export const isPublic = (r: ARange) => !NON_PUBLIC.some((n) => n.lo <= r.hi && n.hi >= r.lo)
 
 // ---------- ports / protocols ----------
 const PROTO_NUM: Record<string, string> = { '1': 'icmp', '6': 'tcp', '17': 'udp', '58': 'ipv6-icmp', '132': 'sctp', '47': 'gre', '50': 'esp', '51': 'ah', '2': 'igmp' }
@@ -306,7 +337,7 @@ export function postureHolds(p: Policy, rule: NetRule, attrs: Record<string, Jso
 }
 
 // ---------- matching ----------
-export type Target = { kind: 'device'; dev: Device } | { kind: 'range'; label: string; lo: number; hi: number } | { kind: 'service'; name: string } | { kind: 'internet' }
+export type Target = { kind: 'device'; dev: Device } | { kind: 'range'; label: string; lo: bigint; hi: bigint } | { kind: 'service'; name: string } | { kind: 'internet' }
 export const targetLabel = (t: Target) => (t.kind === 'device' ? t.dev.name : t.kind === 'range' ? t.label : t.kind === 'service' ? t.name : 'internet')
 export const isTagged = (d: Device) => d.tags.length > 0
 
@@ -325,7 +356,7 @@ export class Ctx {
     return this.users.get(email.toLowerCase()) ?? { email, role: 'member' }
   }
   /** Address ranges for IP-ish selectors (IP, CIDR, host alias, ipset); null if not an address selector. */
-  addr(sel: string, seen = new Set<string>()): { add: Range[]; remove: Range[] } | null {
+  addr(sel: string, seen = new Set<string>()): { add: ARange[]; remove: ARange[] } | null {
     if (seen.has(sel)) return { add: [], remove: [] }
     seen.add(sel)
     const r = parseCidr(sel)
@@ -335,7 +366,7 @@ export class Ctx {
       return { add: h ? [h] : [], remove: [] }
     }
     if (sel.startsWith('ipset:')) {
-      const out = { add: [] as Range[], remove: [] as Range[] }
+      const out = { add: [] as ARange[], remove: [] as ARange[] }
       for (const e of this.p.ipsets[sel] ?? []) {
         const m = /^(add|remove)\s+(.+)$/.exec(e.trim())
         const op = m ? m[1] : 'add'
@@ -347,21 +378,19 @@ export class Ctx {
       }
       return out
     }
-    if (isAddrLiteral(sel)) return { add: [], remove: [] }
     return null
   }
   addrHas(sel: string, ip: string): boolean | null {
     const a = this.addr(sel)
     if (!a) return null
-    if (!a.add.length && sel === ip) return true
-    const n = ip4(ip)
+    const n = ipAddr(ip)
     if (n === null) return this.p.hosts[sel] === ip || sel === ip
     return a.add.some((r) => n >= r.lo && n <= r.hi) && !a.remove.some((r) => n >= r.lo && n <= r.hi)
   }
-  addrOverlaps(sel: string, t: Range): boolean | null {
+  addrOverlaps(sel: string, t: ARange): boolean | null {
     const a = this.addr(sel)
     if (!a) return null
-    const inside = (r: Range) => t.lo >= r.lo && t.hi <= r.hi
+    const inside = (r: ARange) => within(t, r)
     return a.add.some((r) => r.lo <= t.hi && r.hi >= t.lo) && !a.remove.some(inside)
   }
   /** Identity selectors shared by src and dst. */
@@ -392,6 +421,7 @@ export class Ctx {
   dstMatch(sel: string, src: Device, t: Target): boolean {
     if (t.kind === 'internet') return sel === 'autogroup:internet'
     if (t.kind === 'service') return sel === t.name
+    if (t.kind === 'range' && sel === 'autogroup:internet') return isPublic(t)
     if (sel === 'autogroup:internet' || sel.startsWith('svc:')) return false
     if (t.kind === 'range') {
       if (sel === '*') return true
@@ -427,7 +457,7 @@ export function matrixTargets(p: Policy, inv: Inventory): Target[] {
   for (const d of inv.devices)
     for (const r of d.routes) {
       const c = parseCidr(r)
-      if (!c || seen.has(r) || r === '0.0.0.0/0') continue
+      if (!c || seen.has(r) || r === '0.0.0.0/0' || r === '::/0') continue
       seen.add(r)
       t.push({ kind: 'range', label: r, ...c })
     }
@@ -507,7 +537,8 @@ export function resolveSrc(ctx: Ctx, alias: string): Device | string {
   }
   const ip = ctx.p.hosts[alias] ?? alias
   if (parseCidr(ip)) return devices.find((d) => d.ip === ip) ?? { name: alias, ip, owner: '', tags: [], routes: [] }
-  return `Test src "${alias}" must be a user, tag, host or IP`
+  if (!alias.includes(':') && !alias.includes('@')) return `"${alias}" is neither a device in the inventory nor a host defined in "hosts"`
+  return `Test src "${alias}" must be a user, group, tag, host or IP`
 }
 export function resolveTargets(ctx: Ctx, alias: string): Target[] | string {
   const { devices } = ctx.inv
@@ -585,7 +616,8 @@ export function runTests(p: Policy, inv: Inventory): TestResult[] {
   }
   for (const t of p.sshTests) {
     const ctx = testCtx(p, inv, t.attrs)
-    const srcs = resolveSrcs(ctx, t.src)
+    // Tailscale's sshTests evaluator resolves a user, not a group (tailscale/tailscale#11790).
+    const srcs = t.src.startsWith('group:') ? `sshTests src must be a user or tag, not a group (${t.src})` : resolveSrcs(ctx, t.src)
     if (typeof srcs === 'string') { out.push({ kind: 'sshTests', index: t.index, path: t.path, src: t.src, ok: false, assertions: [], error: srcs }); continue }
     const assertions: Assertion[] = []
     for (const dstAlias of t.dst) {
@@ -737,8 +769,6 @@ export function lint(p: Policy, inv: Inventory): Problem[] {
 }
 
 // ---------- inventory helpers ----------
-const CGNAT = parseCidr('100.64.0.0/10')!
-const inCgnat = (r: Range) => r.lo >= CGNAT.lo && r.hi <= CGNAT.hi
 
 /** Build a plausible inventory from what the policy itself names. Everything here is a guess and is labelled as such in the UI. */
 export function inferInventory(p: Policy): Inventory {
@@ -769,8 +799,10 @@ export function inferInventory(p: Policy): Inventory {
   for (const [addr, name] of literals) {
     const r = parseCidr(addr)
     if (!r) continue
-    if (r.lo === r.hi && inCgnat(r)) { used.add(addr); devices.push({ name, ip: addr, owner: '', tags: [], routes: [] }) }
-    else if (!inCgnat(r)) routes.push(r.lo === r.hi && !addr.includes('/') ? `${addr}/32` : addr)
+    // A single address used as a source (a LAN host behind a subnet router, say) needs a device to send from.
+    const asSrc = p.rules.some((x) => x.src.some((y) => y.sel === name || y.sel === addr))
+    if (r.lo === r.hi && (inTailnet(r) || asSrc)) { used.add(addr); devices.push({ name, ip: addr, owner: '', tags: [], routes: [] }) }
+    else if (!inTailnet(r)) routes.push(r.lo === r.hi && !addr.includes('/') ? `${addr}/${addr.includes(':') ? 128 : 32}` : addr)
   }
   let n = 1
   const ip = () => {

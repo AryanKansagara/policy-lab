@@ -1,4 +1,5 @@
 import type { Inventory } from './engine.ts'
+import { REAL_HOMELAB } from './realPolicy.ts'
 
 export interface Sample { id: string; name: string; blurb: string; policy: string; previous: string; inventory: Inventory }
 
@@ -281,8 +282,27 @@ const enterpriseInv: Inventory = {
   ],
 }
 
+// The policy is real and public (MIT, see realPolicy.ts); the devices below are made up to fit its tags.
+const realPrevious = REAL_HOMELAB.replace(`"dst":    ["tag:infra:22", "tag:edge:22"],`, `"dst":    ["tag:infra:*", "tag:edge:22"],`)
+const realInv: Inventory = {
+  users: [{ email: 'admin@example.com', role: 'admin' }],
+  devices: [
+    { name: 'admin-phone', ip: '100.92.14.7', owner: 'admin@example.com', tags: [], routes: [] },
+    { name: 'admin-laptop', ip: '100.92.14.8', owner: 'admin@example.com', tags: [], routes: [] },
+    { name: 'dev0', ip: '100.92.20.1', owner: '', tags: ['tag:dev'], routes: [] },
+    { name: 'servnerr', ip: '100.92.30.1', owner: '', tags: ['tag:infra'], routes: [] },
+    { name: 'routnerr', ip: '100.92.30.2', owner: '', tags: ['tag:infra', 'tag:router'], routes: ['10.0.0.0/24', '10.1.0.0/16', 'fd9e:1a04:f01d:1::/64', 'fd9e:1a04:f01d:100::/56'], exitNode: true },
+    { name: 'edge0', ip: '100.92.40.1', owner: '', tags: ['tag:edge'], routes: [] },
+    { name: 'hass', ip: '100.92.50.1', owner: '', tags: ['tag:hass'], routes: [] },
+    { name: 'pikvm', ip: '100.92.50.2', owner: '', tags: ['tag:kvm'], routes: [] },
+    { name: 'oob', ip: '100.92.50.3', owner: '', tags: ['tag:oob'], routes: [] },
+    { name: 'gaming-pc', ip: '100.92.60.1', owner: '', tags: ['tag:windows'], routes: [] },
+  ],
+}
+
 export const SAMPLES: Sample[] = [
   { id: 'startup', name: 'Startup (ACLs)', blurb: 'Groups, tags, hosts, SSH check mode and a deliberately failing test.', policy: startupPolicy, previous: startupPrevious, inventory: startupInv },
   { id: 'homelab', name: 'Homelab (grants)', blurb: 'Family tailnet with a NAS, subnet router, exit node and autogroup:self.', policy: homelabPolicy, previous: homelabPrevious, inventory: homelabInv },
   { id: 'enterprise', name: 'Enterprise (grants + app caps)', blurb: 'ipsets, srcPosture, via routing, TailSQL capabilities, ACL→grants migration.', policy: enterprisePolicy, previous: enterprisePrevious, inventory: enterpriseInv },
+  { id: 'real-homelab', name: 'Real homelab (public)', blurb: 'A real published policy: posture, Tailscale Services, IPv6 subnets and 19 test blocks. MIT licence, github.com/mdlayher/homelab.', policy: REAL_HOMELAB, previous: realPrevious, inventory: realInv },
 ]

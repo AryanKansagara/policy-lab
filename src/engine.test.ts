@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { parseHuJSON } from './hujson.ts'
-import { Ctx, capsAllow, computeMatrix, diffPolicies, explain, formatCaps, inferInventory, inventoryFromStatus, lint, loadPolicy, parseIpCap, runTests, sanitizeInventory, sshEval, subtractCaps, type Device, type Inventory } from './engine.ts'
+import { Ctx, capsAllow, parseCidr, computeMatrix, diffPolicies, explain, formatCaps, inferInventory, inventoryFromStatus, lint, loadPolicy, parseIpCap, runTests, sanitizeInventory, sshEval, subtractCaps, type Device, type Inventory } from './engine.ts'
 import { SAMPLES } from './samples.ts'
 import { buildGraph, seedLayout, stepLayout } from './graph.ts'
 import { decodeState, encodeState } from './share.ts'
@@ -82,7 +82,7 @@ test('grants: ip caps, app-only grants carry no network access', () => {
 test('subnet routes, hosts and ipsets with remove', () => {
   const p = load('{"ipsets":{"ipset:lan":["10.0.0.0/24","remove 10.0.0.128/25"]},"grants":[{"src":["b@x.com"],"dst":["ipset:lan"],"ip":["tcp:80"]}]}')
   const ctx = new Ctx(p, inv)
-  const ip = (s: string) => ({ kind: 'range' as const, label: s, ...(() => { const [a, b, c, d] = s.split('.').map(Number); const n = a * 2 ** 24 + b * 65536 + c * 256 + d; return { lo: n, hi: n } })() })
+  const ip = (s: string) => ({ kind: 'range' as const, label: s, ...parseCidr(s)! })
   assert.equal(explain(ctx, D('b1'), ip('10.0.0.5'), 'tcp', 80).allowed, true)
   assert.equal(explain(ctx, D('b1'), ip('10.0.0.200'), 'tcp', 80).allowed, false)
 })
