@@ -1,7 +1,7 @@
 // Identity graph + a small hand-rolled force simulation (no DOM, so it is testable).
 import { capsBetween, Ctx, identityOf, matrixTargets, mergeCaps, targetLabel, type Cap, type Device, type Inventory, type Policy, type Target } from './engine.ts'
 
-export type NodeKind = 'user' | 'tag' | 'subnet' | 'internet'
+export type NodeKind = 'user' | 'tag' | 'subnet' | 'service' | 'internet'
 export interface GNode { id: string; label: string; kind: NodeKind; devices: Device[]; target?: Target; x: number; y: number; vx: number; vy: number; fixed?: boolean }
 export interface GEdge { from: string; to: string; caps: Cap[]; rules: string[] }
 export interface Graph { nodes: GNode[]; edges: GEdge[] }
@@ -20,7 +20,7 @@ export function buildGraph(p: Policy, inv: Inventory): Graph {
       endpoints.push({ id, target: t, src: t.dev })
     } else {
       const id = targetLabel(t)
-      nodes.set(id, { id, label: id, kind: t.kind === 'range' ? 'subnet' : 'internet', devices: [], target: t, ...blank })
+      nodes.set(id, { id, label: id, kind: t.kind === 'range' ? 'subnet' : t.kind === 'service' ? 'service' : 'internet', devices: [], target: t, ...blank })
       endpoints.push({ id, target: t })
     }
   }

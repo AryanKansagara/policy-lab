@@ -19,11 +19,11 @@ export interface NetRule {
   dst: DstEntry[]
   via?: string[]
   app?: string[]
-  posture?: boolean
+  posture?: string[] // srcPosture names; empty means defaultSrcPosture applies
 }
 export interface SshRule { index: number; path: string; action: 'accept' | 'check'; src: Sel[]; dst: Sel[]; users: string[]; checkPeriod?: string }
-export interface TestDef { index: number; path: string; src: string; proto: string; accept: string[]; deny: string[] }
-export interface SshTestDef { index: number; path: string; src: string; dst: string[]; accept: string[]; check: string[]; deny: string[] }
+export interface TestDef { index: number; path: string; src: string; proto: string; accept: string[]; deny: string[]; attrs?: Record<string, Json> }
+export interface SshTestDef { index: number; path: string; src: string; dst: string[]; accept: string[]; check: string[]; deny: string[]; attrs?: Record<string, Json> }
 export type Severity = 'error' | 'warning' | 'info'
 export interface Problem { severity: Severity; code: string; message: string; path?: string }
 
@@ -37,6 +37,8 @@ export interface Policy {
   tests: TestDef[]
   sshTests: SshTestDef[]
   autoApprovers: { routes: Record<string, string[]>; exitNode: string[] }
+  postures: Record<string, string[]>
+  defaultSrcPosture: string[]
   problems: Problem[]
 }
 
@@ -132,9 +134,11 @@ export function subtractCaps(a: Cap[], b: Cap[]): Cap[] {
   }
   return out
 }
+/** Tailscale allows ICMP between two addresses whenever any other traffic is allowed between them. */
 export function capsAllow(caps: Cap[], proto: string, port: number) {
   const p = normProto(proto)
-  return caps.some((c) => (c.proto === '*' || c.proto === p) && (p === 'icmp' || p === 'ipv6-icmp' || (port >= c.lo && port <= c.hi)))
+  if (p === 'icmp' || p === 'ipv6-icmp') return caps.length > 0
+  return caps.some((c) => (c.proto === '*' || c.proto === p) && port >= c.lo && port <= c.hi)
 }
 export function formatCaps(caps: Cap[]): string {
   const m = mergeCaps(caps)
@@ -206,7 +210,7 @@ export function loadPolicy(text: string): Loaded {
     })
     if (!src.length) problems.push({ severity: 'error', code: 'acl-shape', message: 'ACL rule has no "src"', path })
     if (!strs(r.dst ?? r.ports).length) problems.push({ severity: 'error', code: 'acl-shape', message: 'ACL rule has no "dst"', path })
-    rules.push({ kind: 'acl', index, path, src, dst, posture: !!r.srcPosture })
+    rules.push({ kind: 'acl', index, path, src, dst, posture: strs(r.srcPosture) })
   })
   arr(root.grants).forEach((g0, index) => {
     const g = obj(g0)
@@ -227,7 +231,7 @@ export function loadPolicy(text: string): Loaded {
       if (hp && parsePorts(hp.ports) && !isAddrLiteral(d.alias) && (hp.alias === '*' || hp.alias.includes(':') || hp.alias.includes('@') || isAddrLiteral(hp.alias)))
         problems.push({ severity: 'error', code: 'grant-dst-port', message: `Grant dst "${d.alias}" includes a port; grants put ports in "ip"`, path: d.path })
     }
-    rules.push({ kind: 'grant', index, path, src: sels(g.src, `${path}.src`), dst, via: strs(g.via), app, posture: !!g.srcPosture })
+    rules.push({ kind: 'grant', index, path, src: sels(g.src, `${path}.src`), dst, via: strs(g.via), app, posture: strs(g.srcPosture) })
   })
 
   const ssh: SshRule[] = arr(root.ssh).map((s0, index) => {
@@ -239,29 +243,82 @@ export function loadPolicy(text: string): Loaded {
   })
   const tests: TestDef[] = arr(root.tests).map((t0, index) => {
     const t = obj(t0)
-    return { index, path: `tests.${index}`, src: String(t.src ?? ''), proto: t.proto ? normProto(String(t.proto)) : 'tcp', accept: strs(t.accept ?? t.allow), deny: strs(t.deny) }
+    // No proto means "TCP or UDP", per Tailscale's tests documentation.
+    return { index, path: `tests.${index}`, src: String(t.src ?? ''), proto: t.proto ? normProto(String(t.proto)) : '', accept: strs(t.accept ?? t.allow), deny: strs(t.deny), attrs: t.srcPostureAttrs ? obj(t.srcPostureAttrs) : undefined }
   })
   const sshTests: SshTestDef[] = arr(root.sshTests).map((t0, index) => {
     const t = obj(t0)
-    return { index, path: `sshTests.${index}`, src: String(t.src ?? ''), dst: strs(t.dst), accept: strs(t.accept), check: strs(t.check), deny: strs(t.deny) }
+    return { index, path: `sshTests.${index}`, src: String(t.src ?? ''), dst: strs(t.dst), accept: strs(t.accept), check: strs(t.check), deny: strs(t.deny), attrs: t.srcPostureAttrs ? obj(t.srcPostureAttrs) : undefined }
   })
   const aa = obj(root.autoApprovers)
-  const policy: Policy = { groups, tagOwners, hosts, ipsets, rules, ssh, tests, sshTests, autoApprovers: { routes: recStrs(aa.routes), exitNode: strs(aa.exitNode) }, problems }
+  // A posture is a list of assertions, or (newer form) an object with an "assertions" list.
+  const postures = Object.fromEntries(Object.entries(obj(root.postures)).map(([k, v]) => [k, Array.isArray(v) ? strs(v) : strs(obj(v).assertions)]))
+  for (const [k, as] of Object.entries(postures)) as.forEach((a, i) => { if (!parseAssertion(a)) problems.push({ severity: 'error', code: 'posture-syntax', message: `Cannot read posture assertion "${a}"`, path: `postures.${k}.${i}` }) })
+  const policy: Policy = { groups, tagOwners, hosts, ipsets, rules, ssh, tests, sshTests, autoApprovers: { routes: recStrs(aa.routes), exitNode: strs(aa.exitNode) }, postures, defaultSrcPosture: strs(root.defaultSrcPosture), problems }
   return { parse, policy }
 }
 
+// ---------- device posture ----------
+// Assertions look like "node:os IN ['macos', 'windows']" or "node:tsVersion >= '1.60'".
+export interface Assertion0 { attr: string; op: string; value?: Json }
+export function parseAssertion(s: string): Assertion0 | null {
+  const m = /^\s*([\w:.\-]+)\s+(IS NOT SET|IS SET|NOT IN|IN|==|!=|<=|>=|<|>)\s*(.*?)\s*$/.exec(s)
+  if (!m) return null
+  const [, attr, op, raw] = m
+  if (op === 'IS SET' || op === 'IS NOT SET') return raw ? null : { attr, op }
+  const v = parseHuJSON(raw.replace(/'([^']*)'/g, (_, x: string) => JSON.stringify(x)))
+  if (v.error || v.value === undefined) return null
+  if ((op === 'IN' || op === 'NOT IN') !== Array.isArray(v.value)) return null
+  return { attr, op, value: v.value }
+}
+const versionParts = (x: Json) => (typeof x === 'string' && /^\d+(\.\d+)*/.test(x) ? x.split(/[.-]/).map((p) => parseInt(p, 10)) : null)
+function compare(a: Json, b: Json): number {
+  if (typeof a === 'number' && typeof b === 'number') return a - b
+  const va = versionParts(a)
+  const vb = versionParts(b)
+  if (va && vb) {
+    for (let i = 0; i < Math.max(va.length, vb.length); i++) {
+      const d = (va[i] || 0) - (vb[i] || 0)
+      if (d) return d
+    }
+    return 0
+  }
+  return String(a).localeCompare(String(b))
+}
+export function assertionHolds(s: string, attrs: Record<string, Json>): boolean {
+  const a = parseAssertion(s)
+  if (!a) return false
+  const has = Object.prototype.hasOwnProperty.call(attrs, a.attr) && attrs[a.attr] !== null
+  if (a.op === 'IS SET') return has
+  if (a.op === 'IS NOT SET') return !has
+  if (!has) return false
+  const v = attrs[a.attr]
+  if (a.op === 'IN') return (a.value as Json[]).some((x) => compare(v, x) === 0)
+  if (a.op === 'NOT IN') return !(a.value as Json[]).some((x) => compare(v, x) === 0)
+  const c = compare(v, a.value as Json)
+  return a.op === '==' ? c === 0 : a.op === '!=' ? c !== 0 : a.op === '<' ? c < 0 : a.op === '<=' ? c <= 0 : a.op === '>' ? c > 0 : c >= 0
+}
+/** A rule's srcPosture (or the policy's defaultSrcPosture) passes when the device meets every assertion of any one listed posture. */
+export function postureHolds(p: Policy, rule: NetRule, attrs: Record<string, Json>): boolean {
+  const names = rule.posture?.length ? rule.posture : p.defaultSrcPosture
+  if (!names.length) return true
+  return names.some((n) => (p.postures[n] ?? []).every((a) => assertionHolds(a, attrs)))
+}
+
 // ---------- matching ----------
-export type Target = { kind: 'device'; dev: Device } | { kind: 'range'; label: string; lo: number; hi: number } | { kind: 'internet' }
-export const targetLabel = (t: Target) => (t.kind === 'device' ? t.dev.name : t.kind === 'range' ? t.label : 'internet')
+export type Target = { kind: 'device'; dev: Device } | { kind: 'range'; label: string; lo: number; hi: number } | { kind: 'service'; name: string } | { kind: 'internet' }
+export const targetLabel = (t: Target) => (t.kind === 'device' ? t.dev.name : t.kind === 'range' ? t.label : t.kind === 'service' ? t.name : 'internet')
 export const isTagged = (d: Device) => d.tags.length > 0
 
 export class Ctx {
   p: Policy
   users: Map<string, User>
   inv: Inventory
-  constructor(p: Policy, inv: Inventory) {
+  attrs?: Record<string, Json> // known source posture attributes (tests); undefined means postures are assumed to pass
+  constructor(p: Policy, inv: Inventory, attrs?: Record<string, Json>) {
     this.p = p
     this.inv = inv
+    this.attrs = attrs
     this.users = new Map(inv.users.map((u) => [u.email.toLowerCase(), u]))
   }
   user(email: string): User {
@@ -334,7 +391,8 @@ export class Ctx {
   }
   dstMatch(sel: string, src: Device, t: Target): boolean {
     if (t.kind === 'internet') return sel === 'autogroup:internet'
-    if (sel === 'autogroup:internet') return false
+    if (t.kind === 'service') return sel === t.name
+    if (sel === 'autogroup:internet' || sel.startsWith('svc:')) return false
     if (t.kind === 'range') {
       if (sel === '*') return true
       return this.addrOverlaps(sel, t) ?? false
@@ -353,6 +411,7 @@ export interface Hit { rule: NetRule; srcSel: Sel; dst: DstEntry }
 export function capsBetween(ctx: Ctx, src: Device, t: Target, rules = ctx.p.rules): { caps: Cap[]; hits: Hit[] } {
   const hits: Hit[] = []
   for (const rule of rules) {
+    if (ctx.attrs && !postureHolds(ctx.p, rule, ctx.attrs)) continue
     const s = rule.src.find((x) => ctx.srcMatch(x.sel, src))
     if (!s) continue
     for (const d of rule.dst) if (d.caps.length && ctx.dstMatch(d.alias, src, t)) hits.push({ rule, srcSel: s, dst: d })
@@ -372,6 +431,7 @@ export function matrixTargets(p: Policy, inv: Inventory): Target[] {
       seen.add(r)
       t.push({ kind: 'range', label: r, ...c })
     }
+  for (const name of new Set(p.rules.flatMap((r) => r.dst.map((d) => d.alias).filter((a) => a.startsWith('svc:'))))) t.push({ kind: 'service', name })
   const usesInternet = p.rules.some((r) => r.dst.some((d) => d.alias === 'autogroup:internet'))
   if (usesInternet || inv.devices.some((d) => d.exitNode)) t.push({ kind: 'internet' })
   return t
@@ -403,11 +463,12 @@ export function explain(ctx: Ctx, src: Device, t: Target, proto: string, port: n
   const notes: string[] = []
   for (const h of covering) {
     if (h.rule.via?.length) notes.push(`${h.rule.path} only applies when routed via ${h.rule.via.join(', ')}`)
-    if (h.rule.posture) notes.push(`${h.rule.path} also requires the source to pass its srcPosture checks`)
+    if (!ctx.attrs && (h.rule.posture?.length || ctx.p.defaultSrcPosture.length)) notes.push(`${h.rule.path} also requires the source to pass ${(h.rule.posture?.length ? h.rule.posture : ctx.p.defaultSrcPosture).join(' or ')} (assumed here)`)
     if (h.rule.app?.length) notes.push(`${h.rule.path} also grants app capabilities: ${h.rule.app.join(', ')}`)
   }
   if (t.kind === 'range' && covering.length) notes.push('Subnet traffic also requires the route to be approved and the subnet router reachable')
   if (t.kind === 'internet' && covering.length) notes.push('Exit node traffic: autogroup:internet controls who may use exit nodes')
+  if (t.kind === 'service' && covering.length) notes.push(`${t.name} also needs a host approved to serve it and the service to listen on that port`)
   return { allowed: covering.length > 0, hits: covering, near, caps, notes }
 }
 
@@ -451,6 +512,7 @@ export function resolveSrc(ctx: Ctx, alias: string): Device | string {
 export function resolveTargets(ctx: Ctx, alias: string): Target[] | string {
   const { devices } = ctx.inv
   if (alias === 'autogroup:internet') return [{ kind: 'internet' }]
+  if (alias.startsWith('svc:')) return [{ kind: 'service', name: alias }]
   const byName = devices.filter((d) => d.name === alias)
   if (byName.length) return byName.map((dev) => ({ kind: 'device', dev }))
   if (alias.startsWith('tag:') || (alias.includes('@') && !alias.includes(':'))) {
@@ -476,20 +538,41 @@ export function resolveTargets(ctx: Ctx, alias: string): Target[] | string {
 export interface Assertion { dst: string; expect: 'accept' | 'deny' | 'check'; actual: string; ok: boolean; rules: string[]; error?: string }
 export interface TestResult { kind: 'tests' | 'sshTests'; index: number; path: string; src: string; ok: boolean; assertions: Assertion[]; error?: string }
 
+/** Test sources may also be a group: every member is checked. */
+export function resolveSrcs(ctx: Ctx, alias: string): Device[] | string {
+  if (!alias.startsWith('group:')) {
+    const s = resolveSrc(ctx, alias)
+    return typeof s === 'string' ? s : [s]
+  }
+  const members = ctx.p.groups[alias]
+  if (!members) return `Unknown group "${alias}"`
+  if (!members.length) return `${alias} has no members to test`
+  return members.map((m) => resolveSrc(ctx, m)).filter((d): d is Device => typeof d !== 'string')
+}
+
+// Tests know the source's posture: srcPostureAttrs, or no attributes at all when omitted.
+const testCtx = (p: Policy, inv: Inventory, attrs?: Record<string, Json>) => new Ctx(p, inv, attrs ?? {})
+
 export function runTests(p: Policy, inv: Inventory): TestResult[] {
-  const ctx = new Ctx(p, inv)
   const out: TestResult[] = []
   for (const t of p.tests) {
-    const src = resolveSrc(ctx, t.src)
-    if (typeof src === 'string') { out.push({ kind: 'tests', index: t.index, path: t.path, src: t.src, ok: false, assertions: [], error: src }); continue }
+    const ctx = testCtx(p, inv, t.attrs)
+    const srcs = resolveSrcs(ctx, t.src)
+    if (typeof srcs === 'string') { out.push({ kind: 'tests', index: t.index, path: t.path, src: t.src, ok: false, assertions: [], error: srcs }); continue }
     const assertions: Assertion[] = []
     const check = (dst: string, expect: 'accept' | 'deny') => {
       const hp = splitHostPort(dst)
       const port = hp && /^\d+$/.test(hp.ports) ? Number(hp.ports) : NaN
       if (!hp || Number.isNaN(port)) return assertions.push({ dst, expect, actual: '?', ok: false, rules: [], error: 'Test destinations need a single port, e.g. "tag:prod:443"' })
+      if (hp.alias.includes('/')) return assertions.push({ dst, expect, actual: '?', ok: false, rules: [], error: 'Tests cannot use CIDR ranges; name a single IP or host' })
       const targets = resolveTargets(ctx, hp.alias)
       if (typeof targets === 'string') return assertions.push({ dst, expect, actual: '?', ok: false, rules: [], error: targets })
-      const results = targets.map((tg) => explain(ctx, src, tg, t.proto, port))
+      const verdict = (src: Device, tg: Target) => {
+        if (t.proto) return explain(ctx, src, tg, t.proto, port)
+        const tcp = explain(ctx, src, tg, 'tcp', port)
+        return tcp.allowed ? tcp : explain(ctx, src, tg, 'udp', port)
+      }
+      const results = srcs.flatMap((src) => targets.map((tg) => verdict(src, tg)))
       const allowedAll = results.every((r) => r.allowed)
       const allowedAny = results.some((r) => r.allowed)
       const ok = expect === 'accept' ? allowedAll : !allowedAny
@@ -501,8 +584,9 @@ export function runTests(p: Policy, inv: Inventory): TestResult[] {
     out.push({ kind: 'tests', index: t.index, path: t.path, src: t.src, ok: assertions.every((a) => a.ok), assertions })
   }
   for (const t of p.sshTests) {
-    const src = resolveSrc(ctx, t.src)
-    if (typeof src === 'string') { out.push({ kind: 'sshTests', index: t.index, path: t.path, src: t.src, ok: false, assertions: [], error: src }); continue }
+    const ctx = testCtx(p, inv, t.attrs)
+    const srcs = resolveSrcs(ctx, t.src)
+    if (typeof srcs === 'string') { out.push({ kind: 'sshTests', index: t.index, path: t.path, src: t.src, ok: false, assertions: [], error: srcs }); continue }
     const assertions: Assertion[] = []
     for (const dstAlias of t.dst) {
       const targets = resolveTargets(ctx, dstAlias)
@@ -510,7 +594,7 @@ export function runTests(p: Policy, inv: Inventory): TestResult[] {
       const devs = targets.flatMap((x) => (x.kind === 'device' ? [x.dev] : []))
       const want: [string, 'accept' | 'check' | 'deny'][] = [...t.accept.map((u) => [u, 'accept'] as [string, 'accept']), ...t.check.map((u) => [u, 'check'] as [string, 'check']), ...t.deny.map((u) => [u, 'deny'] as [string, 'deny'])]
       for (const [user, expect] of want) {
-        const rs = devs.map((d) => sshEval(ctx, src, d, user))
+        const rs = srcs.flatMap((src) => devs.map((d) => sshEval(ctx, src, d, user)))
         const actuals = [...new Set(rs.map((r) => r.action))]
         const actual = actuals.length === 1 ? actuals[0] : actuals.join('/')
         assertions.push({ dst: `${user}@${dstAlias}`, expect, actual: actual || 'deny', ok: actuals.length === 1 && actuals[0] === expect, rules: [...new Set(rs.flatMap((r) => (r.rule ? [r.rule.path] : [])))] })
@@ -589,7 +673,7 @@ export function lint(p: Policy, inv: Inventory): Problem[] {
     for (const d of r.dst) {
       const allPorts = d.caps.some((c) => c.lo === 0 && c.hi === 65535)
       if (d.alias === '*' && allPorts) add(anySrc ? 'warning' : 'info', 'broad', anySrc ? `${r.path} allows anyone to reach everything on every port (*:*)` : `${r.path} lets ${r.src.map((s) => s.sel).join(', ')} reach every device and subnet on every port`, d.path)
-      else if (anySrc && allPorts) add('warning', 'broad', `${r.path} lets every device reach ${d.alias} on every port`, d.path)
+      else if (anySrc && allPorts && d.alias !== 'autogroup:self') add('warning', 'broad', `${r.path} lets every device reach ${d.alias} on every port`, d.path)
     }
     for (const s of r.src) {
       if (s.sel === 'autogroup:danger-all') add('warning', 'danger-all', `${r.path} uses autogroup:danger-all, which includes sources outside your tailnet`, s.path)
@@ -653,6 +737,10 @@ export function lint(p: Policy, inv: Inventory): Problem[] {
 }
 
 // ---------- inventory helpers ----------
+const CGNAT = parseCidr('100.64.0.0/10')!
+const inCgnat = (r: Range) => r.lo >= CGNAT.lo && r.hi <= CGNAT.hi
+
+/** Build a plausible inventory from what the policy itself names. Everything here is a guess and is labelled as such in the UI. */
 export function inferInventory(p: Policy): Inventory {
   const emails = new Set<string>()
   const scan = (s: string) => { if (s.includes('@') && !s.includes(':')) emails.add(s) }
@@ -662,18 +750,40 @@ export function inferInventory(p: Policy): Inventory {
   p.tests.forEach((t) => scan(t.src))
   p.sshTests.forEach((t) => scan(t.src))
   Object.values(p.tagOwners).flat().forEach(scan)
-  let n = 1
-  const ip = () => `100.64.0.${n++}`
+  const sels = new Set([...p.rules.flatMap((r) => [...r.src.map((s) => s.sel), ...r.dst.map((d) => d.alias)]), ...p.ssh.flatMap((r) => [...r.src, ...r.dst].map((s) => s.sel)), ...Object.values(p.tagOwners).flat()])
+
   const users: User[] = [...emails].map((email) => ({ email, role: 'member' }))
-  if (users[0]) users[0].role = 'admin'
-  const devices: Device[] = users.map((u) => ({ name: `${u.email.split('@')[0]}-laptop`, ip: ip(), owner: u.email, tags: [], routes: [] }))
-  for (const t of Object.keys(p.tagOwners)) devices.push({ name: `${t.slice(4)}-1`, ip: ip(), owner: p.tagOwners[t].find((o) => o.includes('@')) ?? '', tags: [t], routes: [] })
-  for (const [h, v] of Object.entries(p.hosts)) {
-    const r = parseCidr(v)
-    if (r && r.lo === r.hi && !devices.some((d) => d.ip === v)) devices.push({ name: h, ip: v, owner: '', tags: [], routes: [] })
+  if (!users.length) users.push({ email: 'admin@example.com', role: 'member' })
+  users[0].role = 'admin'
+  for (const role of ROLES) if (role !== 'member' && role !== 'admin' && sels.has(`autogroup:${role}`)) users.push({ email: `${role}@example.com`, role })
+  if (sels.has('autogroup:shared')) users.push({ email: 'guest@example.com', role: 'member', shared: true })
+
+  // Address literals: tailnet IPs become devices, everything else is advertised by one subnet router.
+  const literals = new Map<string, string>() // address -> name
+  for (const [h, v] of Object.entries(p.hosts)) literals.set(v, h)
+  for (const r of p.rules) for (const d of r.dst) if (parseCidr(d.alias) && !literals.has(d.alias)) literals.set(d.alias, d.alias)
+  for (const c of Object.keys(p.autoApprovers.routes)) if (parseCidr(c) && !literals.has(c)) literals.set(c, c)
+  const used = new Set<string>()
+  const routes: string[] = []
+  const devices: Device[] = []
+  for (const [addr, name] of literals) {
+    const r = parseCidr(addr)
+    if (!r) continue
+    if (r.lo === r.hi && inCgnat(r)) { used.add(addr); devices.push({ name, ip: addr, owner: '', tags: [], routes: [] }) }
+    else if (!inCgnat(r)) routes.push(r.lo === r.hi && !addr.includes('/') ? `${addr}/32` : addr)
   }
-  const routes = Object.values(p.hosts).filter((v) => v.includes('/') && !v.startsWith('100.'))
-  if (routes.length) devices.push({ name: 'subnet-router', ip: ip(), owner: '', tags: [], routes })
+  let n = 1
+  const ip = () => {
+    while (used.has(`100.64.0.${n}`)) n++
+    used.add(`100.64.0.${n}`)
+    return `100.64.0.${n++}`
+  }
+  const own: Device[] = users.map((u) => ({ name: `${u.email.split('@')[0]}-laptop`, ip: ip(), owner: u.email, tags: [], routes: [] }))
+  own.push({ name: `${users[0].email.split('@')[0]}-phone`, ip: ip(), owner: users[0].email, tags: [], routes: [] })
+  for (const t of Object.keys(p.tagOwners)) own.push({ name: `${t.slice(4)}-1`, ip: ip(), owner: p.tagOwners[t].find((o) => o.includes('@')) ?? '', tags: [t], routes: [] })
+  devices.unshift(...own)
+  const wantsExit = p.rules.some((r) => r.dst.some((d) => d.alias === 'autogroup:internet'))
+  if (routes.length || wantsExit) devices.push({ name: 'subnet-router', ip: ip(), owner: '', tags: [], routes, exitNode: wantsExit })
   return { users, devices }
 }
 
@@ -683,18 +793,23 @@ export function inventoryFromStatus(json: unknown): Inventory {
   if (!s || typeof s !== 'object' || !('Peer' in s || 'Self' in s)) throw new Error('Not `tailscale status --json` output (missing Self/Peer)')
   const userOf = (id?: number) => (id !== undefined ? s.User?.[String(id)]?.LoginName ?? '' : '')
   const peers = [s.Self, ...Object.values(s.Peer ?? {})].filter(Boolean) as StatusPeer[]
-  const devices: Device[] = peers.map((p) => ({
-    name: (p.DNSName?.split('.')[0] || p.HostName || 'device').toLowerCase(),
-    ip: p.TailscaleIPs?.find((x) => x.includes('.')) ?? p.TailscaleIPs?.[0] ?? '',
-    owner: p.Tags?.length ? '' : userOf(p.UserID),
-    tags: p.Tags ?? [],
-    routes: (p.PrimaryRoutes ?? []).filter((r) => r !== '0.0.0.0/0' && r !== '::/0'),
-    exitNode: !!p.ExitNodeOption,
-  }))
-  const emails = [...new Set(devices.map((d) => d.owner).filter(Boolean))]
+  const names = new Set<string>()
+  const devices: Device[] = peers.map((p) => {
+    const ips = p.TailscaleIPs ?? []
+    const self = new Set(ips.flatMap((x) => [x, `${x}/32`, `${x}/128`]))
+    // AllowedIPs carries every approved subnet route, including ones where this node is a standby, not the primary.
+    const routes = [...new Set([...(p.PrimaryRoutes ?? []), ...(p.AllowedIPs ?? [])])].filter((r) => !self.has(r) && r !== '0.0.0.0/0' && r !== '::/0')
+    const base = (p.DNSName?.split('.')[0] || p.HostName || 'device').toLowerCase()
+    let name = base
+    for (let i = 2; names.has(name); i++) name = `${base}-${i}`
+    names.add(name)
+    return { name, ip: ips.find((x) => x.includes('.')) ?? ips[0] ?? '', owner: p.Tags?.length ? '' : userOf(p.UserID), tags: p.Tags ?? [], routes, exitNode: !!p.ExitNodeOption }
+  })
+  const logins = Object.values(s.User ?? {}).map((u) => u.LoginName ?? '').filter((e) => e.includes('@'))
+  const emails = [...new Set([...logins, ...devices.map((d) => d.owner).filter(Boolean)])]
   return { users: emails.map((email) => ({ email, role: 'member' })), devices }
 }
-interface StatusPeer { HostName?: string; DNSName?: string; TailscaleIPs?: string[]; UserID?: number; Tags?: string[]; PrimaryRoutes?: string[]; ExitNodeOption?: boolean }
+interface StatusPeer { HostName?: string; DNSName?: string; TailscaleIPs?: string[] | null; AllowedIPs?: string[] | null; UserID?: number; Tags?: string[] | null; PrimaryRoutes?: string[] | null; ExitNodeOption?: boolean }
 
 export const identityOf = (d: Device) => (d.tags.length ? [...d.tags].sort().join(' + ') : d.owner || d.name)
 

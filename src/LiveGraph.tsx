@@ -38,6 +38,7 @@ function Shape({ kind }: { kind: GNode['kind'] }) {
   if (kind === 'user') return <circle r={R - 1} className="nd" />
   if (kind === 'tag') return <rect x={-R + 2} y={-R + 2} width={2 * R - 4} height={2 * R - 4} rx="5" className="nd" />
   if (kind === 'subnet') return <path d={`M0 ${-R}L${R} 0L0 ${R}L${-R} 0Z`} className="nd" />
+  if (kind === 'service') return <path d={`M${-R / 2} ${-R + 2}H${R / 2}L${R - 1} 0L${R / 2} ${R - 2}H${-R / 2}L${-R + 1} 0Z`} className="nd" />
   return <circle r={R - 1} className="nd nd-net" />
 }
 

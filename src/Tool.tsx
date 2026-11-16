@@ -388,7 +388,7 @@ function MatrixView({ policy, inv, onTrace, onInfer }: { policy: Policy; inv: In
                           const first = c.find((x) => x.hi - x.lo < 1000)
                           onTrace({
                             src: s.name,
-                            dst: t.kind === 'device' ? t.dev.name : t.kind === 'range' ? t.label : 'autogroup:internet',
+                            dst: t.kind === 'internet' ? 'autogroup:internet' : targetLabel(t),
                             port: port !== null ? String(port) : first ? String(first.lo) : '443',
                             proto: first?.proto === 'udp' ? 'udp' : 'tcp',
                           })

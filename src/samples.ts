@@ -233,7 +233,9 @@ const enterprisePolicy = `// Globex: grants-first policy with app capabilities, 
     {"action": "accept", "src": ["group:security"], "dst": ["tag:bastion"], "users": ["autogroup:nonroot"]},
   ],
   "tests": [
-    {"src": "li@globex.com", "accept": ["tag:tailsql:443", "tag:db:5432", "10.10.4.20:5432"], "deny": ["tag:k8s:6443", "10.10.99.5:443"]},
+    // Tests state the posture the source would report; without it, posture checks fail.
+    {"src": "li@globex.com", "srcPostureAttrs": {"node:os": "macos", "node:tsReleaseTrack": "stable"}, "accept": ["tag:tailsql:443", "tag:db:5432", "10.10.4.20:5432"], "deny": ["tag:k8s:6443", "10.10.99.5:443"]},
+    {"src": "li@globex.com", "srcPostureAttrs": {"node:os": "linux", "node:tsReleaseTrack": "unstable"}, "accept": ["tag:tailsql:443"], "deny": ["tag:db:5432"]},
     {"src": "vendor@outsourcer.io", "deny": ["tag:db:5432", "tag:k8s:443"]},
     {"src": "jo@globex.com", "accept": ["tag:k8s:443"], "deny": ["tag:db:5432"]},
     {"src": "tag:bastion", "accept": ["10.10.99.5:22"]},
