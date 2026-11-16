@@ -105,6 +105,7 @@ export default function Landing() {
         <nav className="topbar-actions" aria-label="Main">
           <a className="navlink" href="#features">Features</a>
           <a className="navlink" href="#samples">Samples</a>
+          <Link href="/docs" className="navlink">Docs</Link>
           <ThemeToggle />
           <Link href="/app" className="btn primary">Open the lab</Link>
         </nav>

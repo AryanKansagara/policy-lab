@@ -670,6 +670,7 @@ function GraphView({ policy, inv, onInfer }: { policy: Policy; inv: Inventory; o
           <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="6" className="lg" /></svg><span>User</span>
           <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><rect x="1" y="1" width="12" height="12" rx="3" className="lg" /></svg><span>Tag</span>
           <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M7 0 14 7 7 14 0 7Z" className="lg" /></svg><span>Subnet</span>
+          <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M3.5 1H10.5L13.5 7L10.5 13H3.5L.5 7Z" className="lg" /></svg><span>Service</span>
           <i className="dot dot-ok" /><span>Allowed packet</span>
           <i className="dot dot-no" /><span>Denied packet</span>
         </div>

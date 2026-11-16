@@ -22,13 +22,15 @@ A policy file controls every path on your network and grows one pull request at 
 
 ## Coverage and limits
 
-Supports `groups`, `tagOwners`, `hosts`, `ipsets`, autogroups, `acls`, `grants` (`ip`, `app`, `via`), `ssh`, `tests`, `sshTests` and `autoApprovers`, following Tailscale's public documentation.
+Supports `groups`, `tagOwners`, `hosts`, `ipsets`, autogroups, `acls`, `grants` (`ip`, `app`, `via`, `svc:` services), `ssh`, `tests` (with `srcPostureAttrs`), `sshTests`, `postures`, `defaultSrcPosture` and `autoApprovers`, following Tailscale's public documentation. IPv4 and IPv6 share one 128-bit address space, and `autogroup:internet` covers public addresses only.
+
+The semantics, their sources and the real data used to check them are listed at [/docs](https://policy-lab-delta.vercel.app/docs). The "Real homelab" sample is a published policy from [mdlayher/homelab](https://github.com/mdlayher/homelab) (MIT), and all 19 of its test blocks pass here as they do in Tailscale.
 
 This is an independent reimplementation, not Tailscale's evaluator, so confirm anything critical in the admin console. Known limits:
 
-- CIDR math is IPv4 only. IPv6 addresses match exactly.
-- `srcPosture` is assumed to pass and `via` is assumed to route, and both are noted in the trace.
-- The diff covers network access, not SSH rules.
+- In the matrix and Why?, posture checks are assumed to pass and `via` is assumed to route; both are noted in the trace. Tests evaluate posture.
+- Each device is matched by one address (usually its IPv4), so a rule naming a device's IPv6 tailnet address will not match it.
+- App capabilities are listed, not interpreted. The diff covers network access, not SSH rules.
 
 ## Run locally
 
