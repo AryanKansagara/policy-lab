@@ -47,7 +47,7 @@ export function ThemeToggle() {
 export function Footer() {
   return (
     <footer className="footer">
-      <span>Built by Aryan Kansagara. Independent project, not affiliated with Tailscale.</span>
+      <span>Built by Aryan Kansagara.</span>
     </footer>
   )
 }

@@ -43,4 +43,4 @@ npm run build
 
 Built with Vite, React 19 and TypeScript, with no runtime dependencies beyond React.
 
-Built by Aryan Kansagara. Independent project, not affiliated with Tailscale.
+Built by Aryan Kansagara.
