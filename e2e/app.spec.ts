@@ -58,6 +58,45 @@ test.describe('access matrix', () => {
     await page.getByLabel('Filter by port').fill('')
     await expect(cell(page, 'alice-mbp', 'api-prod-1')).toHaveAttribute('aria-label', 'alice-mbp to api-prod-1: tcp+udp:443')
   })
+
+  test('a port filter that is not a port number is flagged instead of looking applied', async ({ page }) => {
+    await openSample(page)
+    const filterInput = page.getByLabel('Filter by port')
+    const coverage = page.locator('.tile', { hasText: 'Mesh coverage' })
+    const alert = page.locator('#port-filter-error')
+    await expect(coverage).toContainText('38%')
+    await expect(coverage).toContainText('any port')
+
+    for (const text of ['abc', '22 80', '22,80', 'tcp:22', '22-80', '70000', '65536', '-1']) {
+      await filterInput.fill(text)
+      await expect(alert, text).toHaveText('Port must be a number from 0 to 65535. Showing every port.')
+      await expect(filterInput, text).toHaveAttribute('aria-invalid', 'true')
+      await expect(filterInput, text).toHaveAccessibleDescription(/Port must be a number/)
+      // The tile must not claim a port or "any port": the filter is not applied, and the cells say so by being unfiltered.
+      await expect(coverage, text).toContainText('port filter not applied')
+      await expect(coverage, text).not.toContainText('any port')
+      await expect(coverage, text).toContainText('38%')
+      await expect(cell(page, 'alice-mbp', 'api-prod-1'), text).toHaveAttribute('aria-label', 'alice-mbp to api-prod-1: tcp+udp:443')
+    }
+
+    // Edge ports that are valid still filter, and the message goes away.
+    await filterInput.fill('65535')
+    await expect(alert).toHaveCount(0)
+    await expect(filterInput).toHaveAttribute('aria-invalid', 'false')
+    await expect(coverage).toContainText('on port 65535')
+    await filterInput.fill('22')
+    await expect(coverage).toContainText('23%')
+    await expect(coverage).toContainText('on port 22')
+    await expect(alert).toHaveCount(0)
+
+    // From a valid port to an invalid one and back to empty.
+    await filterInput.fill('22 80')
+    await expect(alert).toBeVisible()
+    await expect(coverage).toContainText('38%')
+    await filterInput.fill('')
+    await expect(alert).toHaveCount(0)
+    await expect(coverage).toContainText('any port')
+  })
 })
 
 test.describe('why', () => {

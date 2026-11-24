@@ -6,6 +6,7 @@ import { buildGraph, type GNode } from './graph.ts'
 import { SAMPLES, type Sample } from './samples.ts'
 import { decodeState, encodeState } from './share.ts'
 import { Brand, Footer, ThemeToggle } from './ui.tsx'
+import { parsePortFilter } from './portFilter.ts'
 
 const STORE = 'policy-lab:v1'
 type TabId = 'matrix' | 'why' | 'tests' | 'diff' | 'lints' | 'graph' | 'inventory'
@@ -306,7 +307,8 @@ function MatrixView({ policy, inv, onTrace, onInfer }: { policy: Policy; inv: In
   const [hover, setHover] = useState<{ s: Device; t: Target; caps: Cap[] } | null>(null)
   const m = useMemo(() => computeMatrix(policy, inv), [policy, inv])
   const ctx = useMemo(() => new Ctx(policy, inv), [policy, inv])
-  const port = /^\d+$/.test(portText) ? Number(portText) : null
+  const filter = parsePortFilter(portText)
+  const port = filter.kind === 'port' ? filter.port : null
   const visible = (c: Cap[]) => c.length > 0 && (port === null || capsAllow(c, 'tcp', port) || capsAllow(c, 'udp', port))
   const stats = useMemo(() => {
     let on = 0
@@ -330,15 +332,18 @@ function MatrixView({ policy, inv, onTrace, onInfer }: { policy: Policy; inv: In
     <>
       <div className="tiles">
         <Tile label="Allowed paths" value={stats.on} note={`of ${stats.total} possible`} />
-        <Tile label="Mesh coverage" value={`${pct}%`} note={port === null ? 'any port' : `on port ${port}`} />
+        <Tile label="Mesh coverage" value={`${pct}%`} note={filter.kind === 'invalid' ? 'port filter not applied' : port === null ? 'any port' : `on port ${port}`} />
         <Tile label="Most exposed" value={stats.tn && stats.target ? targetLabel(stats.target) : 'none'} note={stats.tn ? `reachable from ${stats.tn} ${stats.tn === 1 ? 'device' : 'devices'}` : undefined} />
         <Tile label="Widest source" value={stats.sn && stats.source ? stats.source.name : 'none'} note={stats.sn ? `reaches ${stats.sn} ${stats.sn === 1 ? 'destination' : 'destinations'}` : undefined} />
       </div>
       <div className="toolbar">
-        <label className="field-inline">
-          <span className="mono-label">Filter by port</span>
-          <input className="small-input" inputMode="numeric" placeholder="any" value={portText} onChange={(e) => setPortText(e.target.value.trim())} />
-        </label>
+        <div className="port-filter">
+          <label className="field-inline">
+            <span className="mono-label">Filter by port</span>
+            <input className="small-input" inputMode="numeric" placeholder="any" value={portText} aria-invalid={filter.kind === 'invalid'} aria-describedby={filter.kind === 'invalid' ? 'port-filter-error' : undefined} onChange={(e) => setPortText(e.target.value.trim())} />
+          </label>
+          {filter.kind === 'invalid' && <span id="port-filter-error" className="field-error" role="alert">{filter.message} Showing every port.</span>}
+        </div>
         <div className="legend" aria-label="Legend: cell color shows how many ports are open">
           <span>Ports open</span>
           <i className="swatch" style={{ '--w': 34 } as React.CSSProperties} /><span>one</span>
