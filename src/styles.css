@@ -132,6 +132,7 @@ input[type='checkbox'] { width: 15px; height: 15px; accent-color: var(--blue); }
 .badge-warn { background: var(--orange-bg); color: var(--orange); }
 .banner { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin: 14px 18px 0; padding: 10px 12px; border: 1px solid var(--orange); border-radius: 6px; background: var(--orange-bg); }
 .view { padding: 18px; animation: rise .22s ease-out; }
+.stale-note { position: sticky; top: 104px; z-index: 9; margin-bottom: 14px; padding: 9px 12px; border: 1px solid var(--orange); border-radius: 6px; background: var(--orange-bg); font-size: 13px; box-shadow: var(--shadow); }
 @keyframes rise { from { opacity: 0; transform: translateY(5px); } }
 .empty { padding: 56px 20px; text-align: center; border: 1px dashed var(--border); border-radius: 8px; margin-top: 14px; }
 .empty h3 { font-size: 16px; font-weight: 600; margin-bottom: 4px; }
