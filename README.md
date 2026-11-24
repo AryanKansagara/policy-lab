@@ -43,4 +43,11 @@ npm run build
 
 Built with Vite, React 19 and TypeScript, with no runtime dependencies beyond React.
 
+## Tests and CI
+
+- `npm test` runs the engine's unit tests with Node's built-in runner.
+- `npm run test:e2e` builds the app and runs a Playwright (Chromium) suite against the production build served by `vite preview`. It needs the browser once: `npx playwright install chromium` (add `--with-deps` on a fresh Linux machine). Set `E2E_PORT` if port 4173 is taken. The suite runs signed out, blocks every external request (it fails if the app asks for anything beyond Google Fonts) and fails on any uncaught page error.
+- GitHub Actions runs `npm ci`, the build, the unit tests and the E2E suite on every pull request and every push to `main` (job `test`, Node 22, with the Playwright browser cached by version). On a failure the Playwright report and traces are uploaded as an artifact.
+- Vercel deploys `main` only (`git.deploymentEnabled` in `vercel.json`), so pull request branches get no preview. GitHub Actions is the gate.
+
 Built by Aryan Kansagara.
