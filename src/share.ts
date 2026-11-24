@@ -13,3 +13,8 @@ export async function encodeState(state: unknown): Promise<string> {
 export async function decodeState(s: string): Promise<unknown> {
   return JSON.parse(new TextDecoder().decode(await pipe(unb64(s), new DecompressionStream('deflate-raw'))))
 }
+
+// The share code in a location hash (`#s=<code>`), or null when the hash is not a share link.
+export function shareCodeFromHash(hash: string): string | null {
+  return /^#s=(.+)$/.exec(hash)?.[1] ?? null
+}

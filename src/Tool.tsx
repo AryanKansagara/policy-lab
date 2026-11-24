@@ -4,7 +4,7 @@ import { Editor, type Mark, type Tone } from './Editor.tsx'
 import { LiveGraph } from './LiveGraph.tsx'
 import { buildGraph, type GNode } from './graph.ts'
 import { SAMPLES, type Sample } from './samples.ts'
-import { decodeState, encodeState } from './share.ts'
+import { decodeState, encodeState, shareCodeFromHash } from './share.ts'
 import { Brand, Footer, ThemeToggle } from './ui.tsx'
 import { parsePortFilter } from './portFilter.ts'
 
@@ -61,29 +61,40 @@ export default function Tool() {
     window.setTimeout(() => setToast((t) => (t === m ? '' : t)), 3200)
   }, [])
 
-  // Shared URL wins over everything, then gets folded into local state.
+  // Shared URL wins over everything, then gets folded into local state. The fragment is
+  // read on mount and again on hashchange: pasting a link into a tab that already has the
+  // lab open only changes the fragment, so the page never remounts.
   useEffect(() => {
-    const m = /^#s=(.+)$/.exec(location.hash)
     const url = new URL(location.href)
     if (url.searchParams.has('sample')) {
       url.searchParams.delete('sample')
       history.replaceState({}, '', url.pathname + url.search + url.hash)
     }
-    if (!m) return
-    decodeState(m[1])
-      .then((v) => {
-        const s = v as { t?: unknown; i?: unknown; o?: unknown }
-        if (typeof s.t !== 'string') throw new Error('bad state')
-        const i = sanitizeInventory(s.i)
-        setText(s.t)
-        setInv(i)
-        setOld(typeof s.o === 'string' ? s.o : '')
-        setSampleId('')
-        setTrace(defaultTrace(i))
-        say('Loaded shared policy')
-      })
-      .catch(() => say('That share link is damaged, so it was ignored'))
-      .finally(() => history.replaceState({}, '', location.pathname + location.search))
+    let latest = 0
+    const apply = () => {
+      const code = shareCodeFromHash(location.hash)
+      if (!code) return
+      const mine = ++latest // decoding is async, so only the newest link may win
+      decodeState(code)
+        .then((v) => {
+          if (mine !== latest) return
+          const s = v as { t?: unknown; i?: unknown; o?: unknown }
+          if (typeof s.t !== 'string') throw new Error('bad state')
+          const i = sanitizeInventory(s.i)
+          setText(s.t)
+          setInv(i)
+          setOld(typeof s.o === 'string' ? s.o : '')
+          setSampleId('')
+          setTrace(defaultTrace(i))
+          setReveal(null)
+          say('Loaded shared policy')
+        })
+        .catch(() => { if (mine === latest) say('That share link is damaged, so it was ignored') })
+        .finally(() => { if (shareCodeFromHash(location.hash) === code) history.replaceState({}, '', location.pathname + location.search) })
+    }
+    apply()
+    window.addEventListener('hashchange', apply)
+    return () => window.removeEventListener('hashchange', apply)
   }, [say])
 
   useEffect(() => {

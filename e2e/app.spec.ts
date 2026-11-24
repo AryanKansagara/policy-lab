@@ -278,6 +278,46 @@ test.describe('share links', () => {
       await other.context.close()
     }
   })
+
+  test('a share link opened in the same tab loads without a reload', async ({ page, baseURL, context }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write'])
+    await openSample(page)
+    const marker = '// shared in the same tab: marker 2b8e'
+    await policyEditor(page).fill(marker + '\n' + (await policyEditor(page).inputValue()))
+    await page.getByRole('button', { name: 'Copy share link' }).click()
+    await expect(page.locator('.toast')).toContainText('Share link copied')
+    const link = await page.evaluate(() => navigator.clipboard.readText())
+    expect(link).toContain('/app#s=')
+
+    await sampleSelect(page).selectOption('homelab')
+    await expect(policyEditor(page)).toHaveValue(/Nguyen household/)
+
+    // Same tab, same document: only the fragment changes, so the page does not reload.
+    await page.evaluate(() => { (window as unknown as { sameDocument: boolean }).sameDocument = true })
+    await page.goto(link)
+    await expect(page.locator('.toast')).toContainText('Loaded shared policy')
+    await expect(policyEditor(page)).toHaveValue(new RegExp(marker))
+    await expect(policyEditor(page)).toHaveValue(/Acme Robotics/)
+    await expect(sampleSelect(page).locator('option:checked')).toHaveText('Your policy')
+    await expect(page).toHaveURL(`${baseURL}/app`)
+    expect(await page.evaluate(() => (window as unknown as { sameDocument?: boolean }).sameDocument)).toBe(true)
+
+    // A second link pasted into the same tab loads too (the lab was already showing a shared policy).
+    await sampleSelect(page).selectOption('homelab')
+    await expect(policyEditor(page)).toHaveValue(/Nguyen household/)
+    await page.goto(link)
+    await expect(policyEditor(page)).toHaveValue(new RegExp(marker))
+  })
+
+  test('a damaged share link opened in the same tab is ignored and keeps the current policy', async ({ page, baseURL }) => {
+    await openSample(page, 'homelab')
+    await expect(policyEditor(page)).toHaveValue(/Nguyen household/)
+    await page.goto('/app#s=not-a-real-share-link')
+    await expect(page.locator('.toast')).toContainText('That share link is damaged, so it was ignored')
+    await expect(policyEditor(page)).toHaveValue(/Nguyen household/)
+    await expect(sampleSelect(page)).toHaveValue('homelab')
+    await expect(page).toHaveURL(`${baseURL}/app`)
+  })
 })
 
 test.describe('persistence', () => {
