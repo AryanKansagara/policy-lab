@@ -53,6 +53,9 @@ export default function Tool() {
   const lastGood = useRef<Policy | null>(null)
   if (loaded.policy) lastGood.current = loaded.policy
   const policy = loaded.policy ?? lastGood.current
+  // The text does not parse but an earlier version did, so every result view is showing that earlier version.
+  // Editor highlights come from the spans of the current parse, so while stale there is nothing to highlight.
+  const stale = !loaded.policy && !!policy
   const fileInput = useRef<HTMLInputElement>(null)
 
   const say = useCallback((m: string) => {
@@ -255,9 +258,14 @@ export default function Tool() {
             </div>
           )}
           <div id="view" role="tabpanel" aria-labelledby={`tab-${tab}`} className="view" key={tab}>
+            {stale && err && tab !== 'inventory' && (
+              <div className="stale-note" role="status">
+                <strong>Out of date.</strong> This view shows the last version that parsed. The editor text has a syntax error at line {err.line}, col {err.col}, so nothing here reflects it yet.
+              </div>
+            )}
             {!policy ? <Empty title="Fix the syntax error to see results" body="Policy Lab needs one version of the policy that parses." />
               : tab === 'matrix' ? <MatrixView policy={policy} inv={inv} onTrace={traceTo} onInfer={useInferred} />
-              : tab === 'why' ? <WhyView inv={inv} trace={trace} setTrace={setTrace} traced={traced} showPath={showPath} />
+              : tab === 'why' ? <WhyView inv={inv} trace={trace} setTrace={setTrace} traced={traced} showPath={showPath} stale={stale} />
               : tab === 'tests' ? <TestsView results={results} showPath={showPath} onTrace={traceTo} />
               : tab === 'diff' ? <DiffView policy={policy} inv={inv} old={old} setOld={setOld} text={text} sample={SAMPLES.find((s) => s.id === sampleId)} onTrace={traceTo} />
               : tab === 'lints' ? <LintsView lints={lints} showPath={showPath} />
@@ -424,7 +432,7 @@ function runTrace(policy: Policy, inv: Inventory, t: Trace) {
     ssh: target.kind === 'device' && t.sshUser ? sshEval(ctx, src, target.dev, t.sshUser) : undefined,
   }
 }
-function WhyView({ inv, trace, setTrace, traced, showPath }: { inv: Inventory; trace: Trace; setTrace: (t: Trace) => void; traced: ReturnType<typeof runTrace> | null; showPath: (p: string[], t?: Tone) => void }) {
+function WhyView({ inv, trace, setTrace, traced, showPath, stale }: { inv: Inventory; trace: Trace; setTrace: (t: Trace) => void; traced: ReturnType<typeof runTrace> | null; showPath: (p: string[], t?: Tone) => void; stale: boolean }) {
   const set = (k: keyof Trace) => (e: { target: { value: string } }) => setTrace({ ...trace, [k]: e.target.value })
   return (
     <>
@@ -455,7 +463,7 @@ function WhyView({ inv, trace, setTrace, traced, showPath }: { inv: Inventory; t
               <p>
                 <code>{trace.src}</code> → <code>{trace.dst}</code> on <code>{trace.proto}:{trace.port}</code>.{' '}
                 {traced.exp.allowed
-                  ? `${traced.exp.hits.length} matching ${traced.exp.hits.length === 1 ? 'rule' : 'rules'}, highlighted in the editor.`
+                  ? `${traced.exp.hits.length} matching ${traced.exp.hits.length === 1 ? 'rule' : 'rules'}${stale ? '.' : ', highlighted in the editor.'}`
                   : traced.exp.near.length ? 'Tailscale denies by default and no rule covers this. The closest rules are below.' : 'Tailscale denies by default and no rule mentions this source or destination.'}
               </p>
               {traced.exp.caps.length > 0 && !traced.exp.allowed && <p className="muted">This pair can only use {formatCaps(traced.exp.caps)}.</p>}

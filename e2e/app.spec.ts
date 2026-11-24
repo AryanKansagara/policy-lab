@@ -194,6 +194,86 @@ test.describe('syntax errors', () => {
     await expect(page.getByRole('heading', { name: 'Fix the syntax error to see results' })).toBeVisible()
     await expect(page.locator('table.matrix')).toHaveCount(0)
     await expect(page.locator('.tile')).toHaveCount(0)
+    await expect(page.locator('.stale-note')).toHaveCount(0)
+  })
+
+  // Line 24 is the first acls rule; dropping the comma after "accept" breaks the syntax at line 24, col 25.
+  const breakFirstRule = (text: string) => {
+    const broken = text.replace('{"action": "accept", "src": ["group:sre"]', '{"action": "accept" "src": ["group:sre"]')
+    expect(broken).not.toBe(text)
+    return broken
+  }
+
+  test('every result view says it is out of date while the policy has a syntax error', async ({ page }) => {
+    await openSample(page)
+    const stale = page.locator('.stale-note')
+    await expect(stale).toHaveCount(0)
+
+    // Why? on an allowed pair: one rule, highlighted in the editor.
+    await cell(page, 'alice-mbp', 'api-prod-1').click()
+    const verdict = page.locator('.verdict')
+    await expect(verdict).toContainText('Allowed')
+    await expect(verdict).toContainText('1 matching rule, highlighted in the editor.')
+    await expect(page.locator('.ln-hit')).toHaveCount(1)
+    await expect(stale).toHaveCount(0)
+
+    const text = await policyEditor(page).inputValue()
+    await policyEditor(page).fill(breakFirstRule(text))
+    await expect(editorStatus(page)).toHaveText('✕ Line 24, col 25')
+
+    // The old result is still shown, but it is marked, and it no longer claims a highlight that cannot exist.
+    await expect(stale).toBeVisible()
+    await expect(stale).toContainText('Out of date')
+    await expect(stale).toContainText('line 24, col 25')
+    await expect(verdict).toContainText('Allowed')
+    await expect(verdict).toContainText('1 matching rule.')
+    await expect(verdict).not.toContainText('highlighted in the editor')
+    await expect(page.locator('.ln-hit')).toHaveCount(0)
+
+    // Every other result view carries the marker; the inventory is input, not a result.
+    for (const name of ['Access matrix', 'Tests', 'Policy diff', 'Lints', 'Graph']) {
+      await tab(page, name).click()
+      await expect(page.locator('#view .stale-note'), name).toBeVisible()
+    }
+    await tab(page, 'Inventory').click()
+    await expect(stale).toHaveCount(0)
+
+    // Fixing the syntax removes the marker and the highlight comes back.
+    await policyEditor(page).fill(text)
+    await expect(editorStatus(page)).toHaveText('✓ Valid HuJSON')
+    await expect(stale).toHaveCount(0)
+    await tab(page, 'Why?').click()
+    await expect(verdict).toContainText('1 matching rule, highlighted in the editor.')
+    await expect(page.locator('.ln-hit')).toHaveCount(1)
+  })
+
+  test('the Tests verdict from an older version is marked while the text is broken', async ({ page }) => {
+    await openSample(page)
+    await tab(page, 'Tests').click()
+    const saveTile = page.locator('.tile', { hasText: 'Save would be' })
+    await expect(saveTile).toContainText('Rejected')
+
+    // Make every test pass, then break the syntax: the last good version said "Accepted".
+    const text = await policyEditor(page).inputValue()
+    const fixed = text.replace('"deny": ["192.168.10.5:631"]', '"accept": ["192.168.10.5:631"]')
+    expect(fixed).not.toBe(text)
+    await policyEditor(page).fill(fixed)
+    await expect(saveTile).toContainText('Accepted')
+    await expect(page.locator('.stale-note')).toHaveCount(0)
+
+    await policyEditor(page).fill(breakFirstRule(fixed))
+    await expect(editorStatus(page)).toHaveText('✕ Line 24, col 25')
+    await expect(page.locator('.tile', { hasText: 'Test blocks' })).toContainText('7/7')
+    await expect(saveTile).toContainText('Accepted')
+    // The Accepted figure is from the older text, and the panel says so right above it.
+    const stale = page.locator('#view .stale-note')
+    await expect(stale).toBeVisible()
+    await expect(stale).toContainText('This view shows the last version that parsed')
+    expect(await stale.evaluate((n) => n.compareDocumentPosition(document.querySelector('.tiles')!) & Node.DOCUMENT_POSITION_FOLLOWING)).toBeTruthy()
+
+    await policyEditor(page).fill(fixed)
+    await expect(editorStatus(page)).toHaveText('✓ Valid HuJSON')
+    await expect(page.locator('.stale-note')).toHaveCount(0)
   })
 })
 
